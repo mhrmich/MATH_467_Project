@@ -1,21 +1,29 @@
 """Black-Scholes pricing and Greeks for European options."""
-from __future__ import annotations
 
 from dataclasses import dataclass
-from math import erf, exp, log, pi, sqrt
 from typing import Literal
+from math import log, exp, sqrt
 
 OptionType = Literal["call", "put"]
 
 
-def _norm_cdf(x: float) -> float:
-    """Cumulative distribution function for the standard normal distribution."""
-    return 0.5 * (1.0 + erf(x / sqrt(2.0)))
+_INV_SQRT_2PI = 1.0 / sqrt(2.0 * 3.141592653589793)
 
 
 def _norm_pdf(x: float) -> float:
     """Probability density function for the standard normal distribution."""
-    return exp(-0.5 * x * x) / sqrt(2.0 * pi)
+    return _INV_SQRT_2PI * exp(-0.5 * x * x)
+
+
+def _norm_cdf(x: float) -> float:
+    """Cumulative distribution function for the standard normal distribution."""
+    k = 1.0 / (1.0 + 0.2316419 * abs(x))
+    poly = (
+        (((((1.330274429 * k) - 1.821255978) * k) + 1.781477937) * k)
+        - 0.356563782
+    ) * k + 0.319381530
+    approximation = 1.0 - _norm_pdf(x) * poly
+    return approximation if x >= 0 else 1.0 - approximation
 
 
 @dataclass
@@ -28,96 +36,42 @@ class BlackScholesResult:
     rho: float
 
 
-def black_scholes(
-    option_type: OptionType,
-    spot: float,
-    strike: float,
-    time_to_maturity: float,
-    risk_free_rate: float,
-    volatility: float,
-) -> BlackScholesResult:
-    """Calculate the Black-Scholes price and Greeks for a European option.
+def black_scholes(S: float, K: float, T: float, r: float, sigma: float, option_type: OptionType) -> BlackScholesResult:
+    """Returns theoretical price and Greeks for a call or put option."""
 
-    Args:
-        option_type: Either "call" or "put".
-        spot: Current underlying price (S).
-        strike: Strike price (K).
-        time_to_maturity: Time to expiration in years (T).
-        risk_free_rate: Continuously compounded risk-free rate (r).
-        volatility: Implied volatility (sigma).
-
-    Returns:
-        BlackScholesResult containing the price and Greeks (Delta, Gamma, Theta,
-        Vega, Rho).
-    """
     option_type = option_type.lower()
     if option_type not in {"call", "put"}:
         raise ValueError("option_type must be 'call' or 'put'")
+    if S <= 0 or K <= 0:
+        raise ValueError("Underlying price and strike must be positive")
+    if T <= 0:
+        raise ValueError("Time to maturity must be positive")
+    if sigma <= 0:
+        raise ValueError("Volatility must be positive")
 
-    if spot <= 0 or strike <= 0:
-        raise ValueError("spot and strike must be positive")
-    if time_to_maturity <= 0:
-        raise ValueError("time_to_maturity must be positive")
-    if volatility <= 0:
-        raise ValueError("volatility must be positive")
-
-    sqrt_t = sqrt(time_to_maturity)
-    d1 = (
-        log(spot / strike)
-        + (risk_free_rate + 0.5 * volatility**2) * time_to_maturity
-    ) / (volatility * sqrt_t)
-    d2 = d1 - volatility * sqrt_t
+    sqrt_t = sqrt(T)
+    d1 = (log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrt_t)
+    d2 = d1 - sigma * sqrt_t
 
     nd1 = _norm_cdf(d1)
     nd2 = _norm_cdf(d2)
     pdf_d1 = _norm_pdf(d1)
-
-    discount_factor = exp(-risk_free_rate * time_to_maturity)
+    discount_factor = exp(-r * T)
 
     if option_type == "call":
-        price = spot * nd1 - strike * discount_factor * nd2
+        price = S * nd1 - K * discount_factor * nd2
         delta = nd1
-        theta = (
-            -(spot * pdf_d1 * volatility) / (2 * sqrt_t)
-            - risk_free_rate * strike * discount_factor * nd2
-        )
-        rho = strike * time_to_maturity * discount_factor * nd2
+        theta = (-(S * pdf_d1 * sigma) / (2.0 * sqrt_t)) - (r * K * discount_factor * nd2)
+        rho = K * T * discount_factor * nd2
     else:
         nd1_minus = _norm_cdf(-d1)
         nd2_minus = _norm_cdf(-d2)
-        price = strike * discount_factor * nd2_minus - spot * nd1_minus
-        delta = nd1 - 1
-        theta = (
-            -(spot * pdf_d1 * volatility) / (2 * sqrt_t)
-            + risk_free_rate * strike * discount_factor * nd2_minus
-        )
-        rho = -strike * time_to_maturity * discount_factor * nd2_minus
+        price = K * discount_factor * nd2_minus - S * nd1_minus
+        delta = nd1 - 1.0
+        theta = (-(S * pdf_d1 * sigma) / (2.0 * sqrt_t)) + (r * K * discount_factor * nd2_minus)
+        rho = -K * T * discount_factor * nd2_minus
 
-    gamma = pdf_d1 / (spot * volatility * sqrt_t)
-    vega = spot * pdf_d1 * sqrt_t
+    gamma = pdf_d1 / (S * sigma * sqrt_t)
+    vega = S * pdf_d1 * sqrt_t
 
-    return BlackScholesResult(
-        price=price,
-        delta=delta,
-        gamma=gamma,
-        theta=theta,
-        vega=vega,
-        rho=rho,
-    )
-
-
-if __name__ == "__main__":
-    parameters = {
-        "spot": 100.0,
-        "strike": 100.0,
-        "time_to_maturity": 1.0,
-        "risk_free_rate": 0.05,
-        "volatility": 0.2,
-    }
-
-    call_result = black_scholes("call", **parameters)
-    put_result = black_scholes("put", **parameters)
-
-    print("Sample parameters:", parameters)
-    print("\nCall option:", call_result)
-    print("Put option:", put_result)
+    return BlackScholesResult(price=price, delta=delta, gamma=gamma, theta=theta, vega=vega, rho=rho)
